@@ -5,6 +5,9 @@ import csv
 import logging
 from datetime import datetime, timedelta
 import sqlite3
+import paramiko
+import glob
+import shutil
 
 from dotenv import dotenv_values
 
@@ -48,24 +51,20 @@ class CustomFormatter(logging.Formatter):
         formatter = logging.Formatter(log_fmt)
         return formatter.format(record)
     
-def initialize_database(logger):
-    try:
-        if not os.path.exists(db_file):
-            conn = sqlite3.connect(db_file)
-            cursor = conn.cursor()
+def initialize_database():
+    if not os.path.exists(db_file):
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
 
-            # Create tables and insert initial data here
-            cursor.execute('create table if not exists run_dates (id integer primary key autoincrement, lastrun_date text)'
-            )
+        # Create tables and insert initial data here
+        cursor.execute('create table if not exists run_dates (id integer primary key autoincrement, lastrun_date text)'
+        )
 
-            # Insert initial data
-            cursor.execute(f"insert into run_dates (lastrun_date) values ('{datetime.now().strftime('%Y%m%d')}')")
+        # Insert initial data
+        cursor.execute(f"insert into run_dates (lastrun_date) values ('{datetime.now().strftime('%Y%m%d')}')")
 
-            conn.commit()
-            conn.close()
-            logger.info("Database initialized successfully.")
-    except Exception as e:
-            logger.error(e)
+        conn.commit()
+        conn.close()
 
 def get_lastrun_date():
     conn = sqlite3.connect(db_file)
@@ -83,8 +82,6 @@ def update_lastrun_date(date):
     conn.commit()
     conn.close()
 
-
-
 def append_to_outfile(filename, rows):
     with open(filename, 'a', encoding='utf-8') as f_out:
         output = csv.writer(f_out, delimiter=',', lineterminator="\n", quoting=csv.QUOTE_NONE, escapechar='\\')
@@ -96,6 +93,16 @@ def get_sql_statement_from_file(filename):
         for line in f_in:
             sql += line
     return sql
+
+def sftp_upload(host, port, username, password, filenames, remote_folder):
+    with paramiko.SSHClient() as ssh:
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(hostname=host, port=port, username=username, password=password, look_for_keys=False)
+        sftp = ssh.open_sftp()
+        sftp.chdir(remote_folder)
+        for filename in filenames:
+            sftp.put(localpath=f"{os.getcwd()}\\{filename}", remotepath=filename)
+            shutil.move(src=f"{os.getcwd()}\\{filename}", dst=f"{os.getcwd()}\\csv\\{filename}")
 
 def parseArguments():
     # Create argument parser
@@ -113,8 +120,7 @@ def parseArguments():
 
     return args
 
-def extract_data_to_file(sql_fn, city_code, logger):
-
+def extract_data_to_file(sql_fn, city_code):
     header_flag = 0
     sql_filename = f"{os.getcwd()}\\{sql_fn}.sql"
     sql_statement = get_sql_statement_from_file(sql_filename)
@@ -123,30 +129,28 @@ def extract_data_to_file(sql_fn, city_code, logger):
         run_date = datetime.strptime(get_lastrun_date(), '%Y%m%d') + timedelta(days=1)
         if datetime.strftime(run_date,'%Y%m%d') < datetime.strftime(datetime.now(),'%Y%m%d'):
             out_filename = f"{os.getcwd()}\\{city_code}_{datetime.strftime(run_date,'%Y%m%d')}"
-            logger.info(f"Start {out_filename}")
             try:
                 #encoding="US-ASCII" ISO-8859-1
                 with psycopg.connect(**CONN_INFO) as connection:       
                     with connection.cursor() as cursor:
                         cursor.arraysize = 1000
-                        cursor.execute(sql_statement)
+                        s = datetime.strftime(run_date,'%Y%m%d')
+                        params = (s, s)
+                        cursor.execute(sql_statement, params)
 
                         header_cols = []
                         for col in cursor.description:
                             header_cols.append(col[0])
                             
-                        if header_flag == 0:
+                        if header_flag == 0 and header_cols:
                             append_to_outfile(f"{out_filename}.csv", [header_cols])
-                            header_flag = 1
+                            #header_flag = 1
                             
                         rows = cursor.fetchall()
                         append_to_outfile(f"{out_filename}.csv", rows)
                 update_lastrun_date(datetime.strftime(run_date,'%Y%m%d'))
-                logger.info("Successfully")
             except Exception as e:
-                logger.error(f"Something error occurred: {e}")
-
-            logger.info(f"End {out_filename}")
+                break
         else:
             break
                         
@@ -178,9 +182,14 @@ if __name__=='__main__':
     logger.addHandler(stdout_handler)
     logger.addHandler(file_handler)
 
-    initialize_database(logger)
-
-    get_lastrun_date()
-
-    extract_data_to_file(_sql, _csv, logger)
+    try:
+        logger.info('Start')
+        initialize_database()
+        extract_data_to_file(_sql, _csv)
+        sftp_upload(host=env.get('sftp_host'), port=env.get('sftp_port'),
+                username=env.get('sftp_username'), password=env.get('sftp_password'),
+                remote_folder=env.get('sftp_remote_folder'), filenames=glob.glob('*.csv'))
+        logger.info('End successfully')
+    except Exception as e:
+        logger.error(e)
 
