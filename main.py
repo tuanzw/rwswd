@@ -132,11 +132,15 @@ def extract_data_to_file(sql_fn, city_code):
                     engine = create_engine(conn_str)
                 event_df = pl.read_database(query=sql_statement, connection=engine,
                                             execute_options={"parameters": {"wdate": datetime.strftime(run_date,'%Y%m%d') },})
+                print(event_df)
                 emp_df = pl.read_csv(source=workday_csv, has_header=True)
                 with pl.SQLContext(event=event_df, eager=True) as ctx:
-                    ctx.register_many(employee=emp_df)
-                    result = ctx.execute("SELECT event.clock_event_type, employee.workday_worker_id, event.timezone, event.datetime FROM employee inner join event on employee.payroll_id=event.payroll_id")
-                    result.write_csv(f"{out_filename}.csv", include_header=True)
+                    try:
+                        ctx.register_many(employee=emp_df)
+                        result = ctx.execute("SELECT 'VNM_Regular_Hours' time_entry_code, event.clock_event_type, employee.workday_worker_id, event.timezone, event.datetime FROM employee inner join event on employee.payroll_id=event.payroll_id")
+                        result.write_csv(f"{out_filename}.csv", include_header=True)
+                    except Exception as e:
+                        logger.error(e)
                 update_lastrun_date(datetime.strftime(run_date,'%Y%m%d'))
             except Exception as e:
                 break
@@ -175,9 +179,9 @@ if __name__=='__main__':
         logger.info('Start')
         initialize_database()
         extract_data_to_file(_sql, _csv)
-        sftp_upload(host=env.get('sftp_host'), port=env.get('sftp_port'),
-                username=env.get('sftp_username'), password=env.get('sftp_password'),
-                remote_folder=env.get('sftp_remote_folder'), filenames=glob.glob(f'{_csv}*.csv'))
+        # sftp_upload(host=env.get('sftp_host'), port=env.get('sftp_port'),
+        #         username=env.get('sftp_username'), password=env.get('sftp_password'),
+        #         remote_folder=env.get('sftp_remote_folder'), filenames=glob.glob(f'{_csv}*.csv'))
         logger.info('End successfully')
     except Exception as e:
         logger.error(e)
