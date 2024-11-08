@@ -9,6 +9,10 @@ import paramiko
 import glob
 import shutil
 
+import polars as pl
+from sqlalchemy import create_engine
+
+
 from dotenv import dotenv_values
 
 
@@ -24,7 +28,17 @@ CONN_INFO = {
     'sslmode' : 'verify-full'
 }
 
+ssl_args = {
+    'sslmode': 'verify-full',
+    'sslrootcert': env.get('ca_cert_file'),
+}
+
+conn_str = f"postgresql+psycopg://{env.get('dbuser')}:{env.get('dbpwd')}@{env.get('dbhost')}:{env.get('dbport')}/{env.get('dbname')}"
+
+
 db_file = 'data.db'
+
+workday_csv = 'workdayid.csv'
 
 class CustomFormatter(logging.Formatter):
     """Logging colored formatter, adapted from https://stackoverflow.com/a/56944256/3638629"""
@@ -70,7 +84,7 @@ def get_lastrun_date():
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
     cursor.execute('select lastrun_date from run_dates where id=1')
-    lastrun_date = cursor.fetchall().pop()[0]
+    lastrun_date = cursor.fetchone()[0]
     conn.commit()
     conn.close()
     return lastrun_date
@@ -81,11 +95,6 @@ def update_lastrun_date(date):
     cursor.execute(f"update run_dates set lastrun_date = '{date}' where id=1")
     conn.commit()
     conn.close()
-
-def append_to_outfile(filename, rows):
-    with open(filename, 'a', encoding='utf-8') as f_out:
-        output = csv.writer(f_out, delimiter=',', lineterminator="\n", quoting=csv.QUOTE_NONE, escapechar='\\')
-        output.writerows(rows)
 
 def get_sql_statement_from_file(filename):
     sql = ''
@@ -121,7 +130,6 @@ def parseArguments():
     return args
 
 def extract_data_to_file(sql_fn, city_code):
-    header_flag = 0
     sql_filename = f"{os.getcwd()}\\{sql_fn}.sql"
     sql_statement = get_sql_statement_from_file(sql_filename)
 
@@ -130,24 +138,14 @@ def extract_data_to_file(sql_fn, city_code):
         if datetime.strftime(run_date,'%Y%m%d') < datetime.strftime(datetime.now(),'%Y%m%d'):
             out_filename = f"{os.getcwd()}\\{city_code}_{datetime.strftime(run_date,'%Y%m%d')}"
             try:
-                #encoding="US-ASCII" ISO-8859-1
-                with psycopg.connect(**CONN_INFO) as connection:       
-                    with connection.cursor() as cursor:
-                        cursor.arraysize = 1000
-                        s = datetime.strftime(run_date,'%Y%m%d')
-                        params = (s, s)
-                        cursor.execute(sql_statement, params)
-
-                        header_cols = []
-                        for col in cursor.description:
-                            header_cols.append(col[0])
-                            
-                        if header_flag == 0 and header_cols:
-                            append_to_outfile(f"{out_filename}.csv", [header_cols])
-                            #header_flag = 1
-                            
-                        rows = cursor.fetchall()
-                        append_to_outfile(f"{out_filename}.csv", rows)
+                engine = create_engine(conn_str,connect_args=ssl_args)
+                event_df = pl.read_database(query=sql_statement, connection=engine,
+                                            execute_options={"parameters": {"wdate": datetime.strftime(run_date,'%Y%m%d') },})
+                emp_df = pl.read_csv(source=workday_csv, has_header=True)
+                with pl.SQLContext(event=event_df, eager=True) as ctx:
+                    ctx.register_many(employee=emp_df)
+                    result = ctx.execute("SELECT event.clock_event_type, employee.workday_worker_id, event.timezone, event.datetime FROM employee inner join event on employee.payroll_id=event.payroll_id")
+                    result.write_csv(f"{out_filename}.csv", include_header=True)
                 update_lastrun_date(datetime.strftime(run_date,'%Y%m%d'))
             except Exception as e:
                 break
