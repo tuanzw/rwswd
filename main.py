@@ -69,14 +69,10 @@ def initialize_database():
     if not os.path.exists(db_file):
         conn = sqlite3.connect(db_file)
         cursor = conn.cursor()
-
         # Create tables and insert initial data here
-        cursor.execute('create table if not exists run_dates (id integer primary key autoincrement, lastrun_date text)'
-        )
-
+        cursor.execute('create table if not exists run_dates (id integer primary key autoincrement, lastrun_date text)')
         # Insert initial data
         cursor.execute(f"insert into run_dates (lastrun_date) values ('{datetime.now().strftime('%Y%m%d')}')")
-
         conn.commit()
         conn.close()
 
@@ -114,19 +110,11 @@ def sftp_upload(host, port, username, password, filenames, remote_folder):
             shutil.move(src=f"{os.getcwd()}\\{filename}", dst=f"{os.getcwd()}\\csv\\{filename}")
 
 def parseArguments():
-    # Create argument parser
     parser = argparse.ArgumentParser()
-
-    # Optional arguments
     parser.add_argument("-i", "--sql", help="sql", type=str, default='sql')
     parser.add_argument("-o", "--csv", help="csv", type=str, required=True, default=None)
-    
-    # Print version
     parser.add_argument("--version", action="version", version='%(prog)s - Version 1.0')
-
-    # Parse arguments
     args = parser.parse_args()
-
     return args
 
 def extract_data_to_file(sql_fn, city_code):
@@ -138,7 +126,10 @@ def extract_data_to_file(sql_fn, city_code):
         if datetime.strftime(run_date,'%Y%m%d') < datetime.strftime(datetime.now(),'%Y%m%d'):
             out_filename = f"{os.getcwd()}\\{city_code}_{datetime.strftime(run_date,'%Y%m%d')}"
             try:
-                engine = create_engine(conn_str,connect_args=ssl_args)
+                if env.get('environment') == 'uat':
+                    engine = create_engine(conn_str,connect_args=ssl_args)
+                else: # prod
+                    engine = create_engine(conn_str)
                 event_df = pl.read_database(query=sql_statement, connection=engine,
                                             execute_options={"parameters": {"wdate": datetime.strftime(run_date,'%Y%m%d') },})
                 emp_df = pl.read_csv(source=workday_csv, has_header=True)
@@ -158,7 +149,7 @@ if __name__=='__main__':
     _sql = args.sql.split('.')[0]
     _csv = args.csv
 
-        # Create custom logger logging all five levels
+    # Create custom logger logging all five levels
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
 
@@ -186,7 +177,7 @@ if __name__=='__main__':
         extract_data_to_file(_sql, _csv)
         sftp_upload(host=env.get('sftp_host'), port=env.get('sftp_port'),
                 username=env.get('sftp_username'), password=env.get('sftp_password'),
-                remote_folder=env.get('sftp_remote_folder'), filenames=glob.glob('*.csv'))
+                remote_folder=env.get('sftp_remote_folder'), filenames=glob.glob(f'{_csv}*.csv'))
         logger.info('End successfully')
     except Exception as e:
         logger.error(e)
