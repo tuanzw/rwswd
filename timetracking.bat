@@ -1,6 +1,8 @@
 @echo off
 
-call %userprofile%\projects\rwswd\venv\Scripts\activate
+cd %userprofile%\projects\rwswd\
+
+call venv\Scripts\activate
 
 :: Excute
 python %userprofile%\Projects\rwswd\main.py -i sql -o vnthu01
