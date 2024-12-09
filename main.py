@@ -100,14 +100,15 @@ def get_sql_statement_from_file(filename):
     return sql
 
 def sftp_upload(host, port, username, password, filenames, remote_folder):
-    with paramiko.SSHClient() as ssh:
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(hostname=host, port=port, username=username, password=password, look_for_keys=False)
-        sftp = ssh.open_sftp()
-        sftp.chdir(remote_folder)
-        for filename in filenames:
-            sftp.put(localpath=f"{os.getcwd()}\\{filename}", remotepath=filename)
-            shutil.move(src=f"{os.getcwd()}\\{filename}", dst=f"{os.getcwd()}\\csv\\{filename}")
+    if env.get('environment') != 'uat':
+        with paramiko.SSHClient() as ssh:
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(hostname=host, port=port, username=username, password=password, look_for_keys=False)
+            sftp = ssh.open_sftp()
+            sftp.chdir(remote_folder)
+            for filename in filenames:
+                sftp.put(localpath=f"{os.getcwd()}\\{filename}", remotepath=filename)
+                shutil.move(src=f"{os.getcwd()}\\{filename}", dst=f"{os.getcwd()}\\csv\\{filename}")
 
 def parseArguments():
     parser = argparse.ArgumentParser()
@@ -132,14 +133,17 @@ def extract_data_to_file(sql_fn, city_code):
                     engine = create_engine(conn_str)
                 event_df = pl.read_database(query=sql_statement, connection=engine,
                                             execute_options={"parameters": {"wdate": datetime.strftime(run_date,'%Y%m%d') },})
-                emp_df = pl.read_csv(source=workday_csv, has_header=True)
-                with pl.SQLContext(event=event_df, eager=True) as ctx:
-                    try:
-                        ctx.register_many(employee=emp_df)
-                        result = ctx.execute("SELECT 'VNM_Regular_Hours' time_entry_code, event.clock_event_type, employee.workday_worker_id, event.timezone, event.datetime FROM employee inner join event on employee.payroll_id=event.payroll_id")
-                        result.write_csv(f"{out_filename}.csv", include_header=True)
-                    except Exception as e:
-                        logger.error(e)
+                if event_df.height > 0:
+                    emp_df = pl.read_csv(source=workday_csv, has_header=True)
+                    with pl.SQLContext(event=event_df, eager=True) as ctx:
+                        try:
+                            ctx.register_many(employee=emp_df)
+                            result = ctx.execute("SELECT 'VNM_Regular_Hours' time_entry_code, event.clock_event_type, employee.workday_worker_id, event.timezone, event.datetime FROM employee inner join event on employee.payroll_id=event.payroll_id")
+                            result.write_csv(f"{out_filename}.csv", include_header=True)
+                        except Exception as e:
+                            logger.error(e)
+                else:
+                    logger.info(f"{event_df.height} record(s) on {run_date}")
                 update_lastrun_date(datetime.strftime(run_date,'%Y%m%d'))
             except Exception as e:
                 break
