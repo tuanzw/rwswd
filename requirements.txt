@@ -2,4 +2,7 @@ paramiko
 psycopg
 python-dotenv
 sqlalchemy
-pysqlite
+polars
+pandas
+openpyxl
+xlrd
