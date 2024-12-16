@@ -6,3 +6,4 @@ polars
 pandas
 openpyxl
 xlrd
+pywin32
